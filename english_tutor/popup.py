@@ -100,6 +100,13 @@ class TranslationPopup(QWidget):
     def _finish(self) -> None:
         self.body_layout.addStretch()
         # Word-wrapped labels only know their height once the width is fixed.
+        # Widgets added while the popup is already visible stay hidden (and are left
+        # out of the height calculation) until shown explicitly.
+        for i in range(self.body_layout.count()):
+            widget = self.body_layout.itemAt(i).widget()
+            if widget:
+                widget.show()
+        self.body_layout.invalidate()
         inner_w = WIDTH - 2 - self.scroll.verticalScrollBar().sizeHint().width()
         content_h = self.body_layout.heightForWidth(inner_w) + 40
         self.setFixedHeight(min(MAX_HEIGHT, max(120, content_h)))
