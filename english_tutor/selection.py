@@ -104,6 +104,20 @@ def _point_is_ours(x: int, y: int) -> bool:
     return pid == os.getpid()
 
 
+def _vk_hotkey(hotkey: str) -> str:
+    """Rewrites '<ctrl>+<alt>+t' as '<ctrl>+<alt>+<84>'.
+
+    With Ctrl+Alt held, Windows reports letter keys by virtual-key code only, so a
+    hotkey written with the letter itself never matches a real key press.
+    """
+    parts = []
+    for part in hotkey.split("+"):
+        if len(part) == 1 and part.isascii() and part.isalnum():
+            part = f"<{ord(part.upper())}>"  # A-Z and 0-9 virtual-key codes are their ASCII codes
+        parts.append(part)
+    return "+".join(parts)
+
+
 def looks_like_english(text: str) -> bool:
     letters = [c for c in text if c.isalpha()]
     if len(letters) < 2:
@@ -129,7 +143,7 @@ class SelectionWatcher:
     def start(self) -> None:
         self._mouse_listener = mouse.Listener(on_click=self._on_click)
         self._mouse_listener.start()
-        self._hotkey_listener = keyboard.GlobalHotKeys({self._hotkey: self._on_hotkey})
+        self._hotkey_listener = keyboard.GlobalHotKeys({_vk_hotkey(self._hotkey): self._on_hotkey})
         self._hotkey_listener.start()
 
     def stop(self) -> None:

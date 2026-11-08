@@ -25,6 +25,18 @@ The app uses the Claude API, so you need an Anthropic API key from
 https://console.anthropic.com. Either set the `ANTHROPIC_API_KEY` environment variable or
 paste the key in **Settings (설정)** the first time the app starts.
 
+## Sharing with someone who doesn't have Python
+
+Run `build.bat`. It produces `dist\EnglishTutor.zip` (about 50 MB), which contains Python
+and every library the app needs. The other person:
+
+1. Unzips it anywhere, for example to `Documents\EnglishTutor`.
+2. Double-clicks `EnglishTutor.exe` inside the unzipped folder. If Windows shows
+   "Windows protected your PC", they click **More info → Run anyway**; the program isn't
+   code-signed.
+3. Enters their own Anthropic API key in Settings when asked. Don't build your key into the
+   app; anyone with the file could extract it and use your account.
+
 ## How to use
 
 The app runs in the system tray (the blue **영** icon).
