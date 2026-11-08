@@ -13,8 +13,8 @@ from PySide6.QtWidgets import (
 from .config import Settings
 from .vocab import VocabStore
 
-COLUMNS = [("word", "단어"), ("part_of_speech", "품사"), ("meaning_ko", "뜻"),
-           ("example_en", "예문"), ("source", "원문"), ("added_at", "저장일")]
+COLUMNS = [("word", "단어 / 표현"), ("part_of_speech", "품사"), ("meaning_ko", "뜻"),
+           ("explanation_ko", "설명"), ("example_en", "예문"), ("source", "원문"), ("added_at", "저장일")]
 
 
 class VocabWindow(QWidget):
@@ -22,10 +22,10 @@ class VocabWindow(QWidget):
         super().__init__()
         self.store = store
         self.setWindowTitle("내 단어장 - English Tutor")
-        self.resize(900, 500)
+        self.resize(1150, 550)
 
         top = QHBoxLayout()
-        self.search = QLineEdit(placeholderText="검색 (단어 또는 뜻)")
+        self.search = QLineEdit(placeholderText="검색 (단어, 표현 또는 뜻)")
         self.search.textChanged.connect(self.refresh)
         top.addWidget(self.search, 1)
         delete_btn = QPushButton("선택 삭제")
@@ -42,7 +42,7 @@ class VocabWindow(QWidget):
         self.table.setWordWrap(True)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
-        for i, width in enumerate([120, 70, 170, 210, 220]):
+        for i, width in enumerate([140, 60, 150, 220, 200, 200]):
             self.table.setColumnWidth(i, width)
         header.setStretchLastSection(True)
 

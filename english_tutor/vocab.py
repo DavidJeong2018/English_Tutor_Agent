@@ -8,14 +8,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
-FIELDS = ["word", "part_of_speech", "meaning_ko", "example_en", "source", "added_at"]
+FIELDS = ["word", "part_of_speech", "meaning_ko", "explanation_ko", "example_en", "source", "added_at"]
 
 
 @dataclass
 class VocabEntry:
-    word: str
+    word: str  # a single word, or a phrase when part_of_speech is "표현"
     meaning_ko: str
     part_of_speech: str = ""
+    explanation_ko: str = ""  # usage notes, filled in for phrases
     example_en: str = ""
     source: str = ""  # the sentence the word was highlighted in
     added_at: str = ""

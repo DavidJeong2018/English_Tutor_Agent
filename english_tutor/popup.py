@@ -4,13 +4,14 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
-from PySide6.QtGui import QCursor, QGuiApplication
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizeGrip, QVBoxLayout, QWidget,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from .config import Settings
-from .translator import TutorResult, Word
+from .translator import TutorResult
+from .vocab import VocabEntry
 
 MIN_FONT, MAX_FONT = 9, 24
 MIN_WIDTH, MIN_HEIGHT = 320, 140
@@ -39,6 +40,41 @@ QPushButton#save:disabled {{ border-color: #9ca3af; color: #9ca3af; }}
 """
 
 
+class ResizeHandle(QWidget):
+    """A strip (or corner) that resizes the popup when dragged."""
+    THICKNESS = 6
+    CORNER = 16
+
+    def __init__(self, edges: Qt.Edges):
+        super().__init__()
+        self.edges = edges
+        corner = edges == (Qt.RightEdge | Qt.BottomEdge)
+        if corner:
+            self.setFixedSize(self.CORNER, self.CORNER)
+            self.setCursor(Qt.SizeFDiagCursor)
+            self.setToolTip("드래그하여 크기 조절")
+        elif edges == Qt.RightEdge:
+            self.setFixedWidth(self.THICKNESS)
+            self.setCursor(Qt.SizeHorCursor)
+        else:
+            self.setFixedHeight(self.THICKNESS)
+            self.setCursor(Qt.SizeVerCursor)
+        self._corner = corner
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.window().windowHandle().startSystemResize(self.edges)
+
+    def paintEvent(self, e):
+        if self._corner:  # three diagonal grip lines; the card's white shows through elsewhere
+            p = QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setPen(QPen(QColor("#9ca3af"), 1.5))
+            w, h = self.width() - 3, self.height() - 3
+            for d in (4, 8, 12):
+                p.drawLine(w - d, h, w, h - d)
+
+
 def _label(text: str, name: str = "") -> QLabel:
     lbl = QLabel(text)
     if name:
@@ -49,7 +85,7 @@ def _label(text: str, name: str = "") -> QLabel:
 
 
 class TranslationPopup(QWidget):
-    def __init__(self, settings: Settings, on_save_word: Callable[[Word, str], bool],
+    def __init__(self, settings: Settings, on_save: Callable[[VocabEntry], bool],
                  is_saved: Callable[[str], bool]):
         # WA_ShowWithoutActivating keeps keyboard focus in the user's PDF reader.
         super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
@@ -57,7 +93,7 @@ class TranslationPopup(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
         self.settings = settings
-        self._on_save_word = on_save_word
+        self._on_save = on_save
         self._is_saved = is_saved
         self._drag_offset: Optional[QPoint] = None
         self._source_text = ""
@@ -100,16 +136,17 @@ class TranslationPopup(QWidget):
         self.body_layout.setContentsMargins(12, 8, 12, 4)
         self.body_layout.setSpacing(4)
         self.scroll.setWidget(self.body)
-        card_layout.addWidget(self.scroll, 1)
 
-        # Bottom-right handle for resizing; the frameless window has no borders to drag.
-        footer = QHBoxLayout()
-        footer.setContentsMargins(0, 0, 2, 2)
-        footer.addStretch()
-        grip = QSizeGrip(self)
-        grip.setToolTip("드래그하여 크기 조절")
-        footer.addWidget(grip, 0, Qt.AlignBottom | Qt.AlignRight)
-        card_layout.addLayout(footer)
+        # The frameless window has no borders to drag, so add our own: right edge,
+        # bottom edge and a visible corner handle.
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(0)
+        grid.addWidget(self.scroll, 0, 0)
+        grid.addWidget(ResizeHandle(Qt.RightEdge), 0, 1)
+        grid.addWidget(ResizeHandle(Qt.BottomEdge), 1, 0)
+        grid.addWidget(ResizeHandle(Qt.RightEdge | Qt.BottomEdge), 1, 1)
+        card_layout.addLayout(grid, 1)
 
         self.setStyleSheet(_style(self.settings.font_size))
         self.resize(self.settings.popup_width, self.settings.popup_height or 200)
@@ -179,40 +216,50 @@ class TranslationPopup(QWidget):
             add(_label("표현 설명", "section"))
             for p in result.phrases:
                 box = QFrame(objectName="phrase")
-                v = QVBoxLayout(box)
-                v.setContentsMargins(8, 6, 8, 6)
+                h = QHBoxLayout(box)
+                h.setContentsMargins(8, 6, 8, 6)
+                v = QVBoxLayout()
                 v.setSpacing(2)
                 v.addWidget(_label(f"<b>{p.phrase}</b> — {p.meaning_ko}"))
                 v.addWidget(_label(p.explanation_ko))
                 v.addWidget(_label(f"<i>예) {p.example_en}</i>"))
+                h.addLayout(v, 1)
+                h.addWidget(self._save_button(VocabEntry(
+                    word=p.phrase, meaning_ko=p.meaning_ko, part_of_speech="표현",
+                    example_en=p.example_en, explanation_ko=p.explanation_ko, source=text)), 0, Qt.AlignTop)
                 add(box)
 
         if result.vocabulary:
             add(_label("단어", "section"))
             for w in result.vocabulary:
-                add(self._word_row(w))
+                row = QWidget()
+                h = QHBoxLayout(row)
+                h.setContentsMargins(0, 2, 0, 2)
+                h.addWidget(_label(
+                    f"<b>{w.word}</b> <span style='color:#6b7280'>({w.part_of_speech})</span> {w.meaning_ko}"
+                    f"<br><span style='color:#6b7280'><i>{w.example_en}</i></span>"), 1)
+                h.addWidget(self._save_button(VocabEntry(
+                    word=w.word, meaning_ko=w.meaning_ko, part_of_speech=w.part_of_speech,
+                    example_en=w.example_en, source=text)), 0, Qt.AlignTop)
+                add(row)
         self._finish()
 
-    def _word_row(self, w: Word) -> QWidget:
-        row = QWidget()
-        h = QHBoxLayout(row)
-        h.setContentsMargins(0, 2, 0, 2)
-        info = _label(f"<b>{w.word}</b> <span style='color:#6b7280'>({w.part_of_speech})</span> {w.meaning_ko}"
-                      f"<br><span style='color:#6b7280'><i>{w.example_en}</i></span>")
-        h.addWidget(info, 1)
+    def _save_button(self, entry: VocabEntry) -> QPushButton:
         btn = QPushButton("저장", objectName="save")
-        if self._is_saved(w.word):
+
+        def mark_saved():
             btn.setText("저장됨")
             btn.setEnabled(False)
+
+        if self._is_saved(entry.word):
+            mark_saved()
 
         def save():
-            self._on_save_word(w, self._source_text)
-            btn.setText("저장됨")
-            btn.setEnabled(False)
+            self._on_save(entry)
+            mark_saved()
 
         btn.clicked.connect(save)
-        h.addWidget(btn, 0, Qt.AlignTop)
-        return row
+        return btn
 
     # --- text size ---
 

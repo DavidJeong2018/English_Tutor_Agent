@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 from .config import SETTINGS_DIR, Settings
 from .popup import TranslationPopup
 from .selection import SelectionWatcher
-from .translator import TranslationError, Translator, TutorResult, Word
+from .translator import TranslationError, Translator, TutorResult
 from .vocab import VocabEntry, VocabStore
 
 
@@ -76,7 +76,7 @@ class TutorApp:
         self.bridge.result.connect(self._on_result)
         self.bridge.error.connect(self._on_error)
 
-        self.popup = TranslationPopup(self.settings, on_save_word=self.save_word, is_saved=self.store.contains)
+        self.popup = TranslationPopup(self.settings, on_save=self.save_entry, is_saved=self.store.contains)
         self.vocab_window = None
 
         self.watcher = SelectionWatcher(self.bridge.selected.emit, hotkey=self.settings.hotkey)
@@ -117,10 +117,8 @@ class TutorApp:
         if request_id == self.request_id:
             self.popup.show_error(message)
 
-    def save_word(self, word: Word, source: str) -> bool:
-        added = self.store.add(VocabEntry(word=word.word, meaning_ko=word.meaning_ko,
-                                          part_of_speech=word.part_of_speech,
-                                          example_en=word.example_en, source=source))
+    def save_entry(self, entry: VocabEntry) -> bool:
+        added = self.store.add(entry)
         if self.vocab_window and self.vocab_window.isVisible():
             self.vocab_window.refresh()
         return added
