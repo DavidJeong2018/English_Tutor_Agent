@@ -1,14 +1,19 @@
 """Wires the selection watcher, translator, popup, tray icon and windows together."""
 from __future__ import annotations
 
+import logging
 import os
 import sys
+from logging.handlers import RotatingFileHandler
 
+import win32api
+import win32event
+import winerror
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from .config import Settings
+from .config import SETTINGS_DIR, Settings
 from .popup import TranslationPopup
 from .selection import SelectionWatcher
 from .translator import TranslationError, Translator, TutorResult, Word
@@ -42,6 +47,7 @@ class _Job(QRunnable):
         except TranslationError as e:
             self.bridge.error.emit(self.request_id, str(e))
         except Exception as e:  # never let a worker crash the app silently
+            logging.getLogger(__name__).exception("translation failed")
             self.bridge.error.emit(self.request_id, f"오류: {e}")
 
 
@@ -70,7 +76,7 @@ class TutorApp:
         self.bridge.result.connect(self._on_result)
         self.bridge.error.connect(self._on_error)
 
-        self.popup = TranslationPopup(on_save_word=self.save_word, is_saved=self.store.contains)
+        self.popup = TranslationPopup(self.settings, on_save_word=self.save_word, is_saved=self.store.contains)
         self.vocab_window = None
 
         self.watcher = SelectionWatcher(self.bridge.selected.emit, hotkey=self.settings.hotkey)
@@ -164,5 +170,25 @@ class TutorApp:
         return self.qt.exec()
 
 
+def _setup_logging() -> None:
+    SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(SETTINGS_DIR / "tutor.log", maxBytes=500_000, backupCount=1, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    logging.getLogger("english_tutor").setLevel(logging.DEBUG)
+
+
 def main() -> None:
-    sys.exit(TutorApp().run())
+    _setup_logging()
+    # Two running copies would both press Ctrl+C on every selection and fight over the clipboard.
+    mutex = win32event.CreateMutex(None, False, "EnglishTutor.SingleInstance")
+    if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
+        win32api.MessageBox(0, "English Tutor가 이미 실행 중입니다.\n작업 표시줄 오른쪽의 트레이 아이콘을 확인하세요.",
+                            "English Tutor", 0x40)
+        return
+    logging.getLogger(__name__).info("English Tutor started")
+    code = TutorApp().run()
+    del mutex
+    sys.exit(code)

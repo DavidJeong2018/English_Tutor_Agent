@@ -7,17 +7,22 @@ and then put the user's previous clipboard contents back.
 from __future__ import annotations
 
 import ctypes
+import logging
 import math
 import os
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, TypeVar
 
+import pywintypes
 import win32clipboard
 import win32con
 import win32gui
 import win32process
 from pynput import keyboard, mouse
+
+log = logging.getLogger(__name__)
+T = TypeVar("T")
 
 # Windows whose Ctrl+C means "interrupt", not "copy".
 CONSOLE_CLASSES = {"ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS", "mintty", "PuTTY"}
@@ -28,36 +33,47 @@ COPY_SETTLE_S = 0.15
 CLIPBOARD_WAIT_S = 0.6
 
 
-def _read_clipboard_text() -> Optional[str]:
-    for _ in range(5):
+def _with_clipboard(action: Callable[[], T], attempts: int = 10) -> Optional[T]:
+    """Runs `action` with the clipboard open, retrying while another program holds it.
+
+    Other programs (PDF readers especially) open the clipboard at the same moment
+    we do, which makes OpenClipboard or GetClipboardData fail; that is not fatal.
+    """
+    for _ in range(attempts):
         try:
             win32clipboard.OpenClipboard()
-        except Exception:
+        except pywintypes.error:
             time.sleep(0.03)
             continue
         try:
-            if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
-                return win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-            return None
+            return action()
+        except pywintypes.error as e:
+            log.debug("clipboard busy, retrying: %s", e)
         finally:
-            win32clipboard.CloseClipboard()
+            try:
+                win32clipboard.CloseClipboard()
+            except pywintypes.error:
+                pass
+        time.sleep(0.03)
+    log.warning("gave up on the clipboard after %d attempts", attempts)
     return None
 
 
+def _read_clipboard_text() -> Optional[str]:
+    def read():
+        if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+            return win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+        return None
+    return _with_clipboard(read)
+
+
 def _write_clipboard_text(text: Optional[str]) -> None:
-    for _ in range(5):
-        try:
-            win32clipboard.OpenClipboard()
-        except Exception:
-            time.sleep(0.03)
-            continue
-        try:
-            win32clipboard.EmptyClipboard()
-            if text is not None:
-                win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
-            return
-        finally:
-            win32clipboard.CloseClipboard()
+    def write():
+        win32clipboard.EmptyClipboard()
+        if text is not None:
+            win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
+        return True
+    _with_clipboard(write)
 
 
 def _clipboard_seq() -> int:
@@ -105,7 +121,6 @@ class SelectionWatcher:
         self.auto_enabled = True
         self._press_pos = None
         self._last_click_t = 0.0
-        self._last_text = ""
         self._busy = threading.Lock()
         self._kb = keyboard.Controller()
         self._mouse_listener: Optional[mouse.Listener] = None
@@ -137,38 +152,45 @@ class SelectionWatcher:
         double = now - self._last_click_t < DOUBLE_CLICK_S
         self._last_click_t = now
         if dragged or double:
-            threading.Thread(target=self._capture, args=(False,), daemon=True).start()
+            threading.Thread(target=self._capture, daemon=True).start()
 
     def _on_hotkey(self):
         # Wait for the user to let go of Ctrl+Alt+T so our Ctrl+C isn't mangled.
-        threading.Thread(target=self._capture, args=(True,), kwargs={"delay": 0.3}, daemon=True).start()
+        threading.Thread(target=self._capture, kwargs={"delay": 0.3}, daemon=True).start()
 
     # --- capture ---
 
-    def _capture(self, forced: bool, delay: float = COPY_SETTLE_S) -> None:
+    def _capture(self, delay: float = COPY_SETTLE_S) -> None:
         if not self._busy.acquire(blocking=False):
             return
         try:
-            time.sleep(delay)
-            if not _foreground_is_safe():
-                return
-            previous = _read_clipboard_text()
-            seq = _clipboard_seq()
-            with self._kb.pressed(keyboard.Key.ctrl):
-                self._kb.tap("c")
-            deadline = time.monotonic() + CLIPBOARD_WAIT_S
-            while _clipboard_seq() == seq and time.monotonic() < deadline:
-                time.sleep(0.02)
-            if _clipboard_seq() == seq:
-                return  # nothing was selected, so nothing was copied
-            text = (_read_clipboard_text() or "").strip()
-            _write_clipboard_text(previous)
-            text = " ".join(text.split())  # PDFs break lines mid-sentence
-            if not text or len(text) > 3000 or not looks_like_english(text):
-                return
-            if text == self._last_text and not forced:
-                return
-            self._last_text = text
-            self._on_text(text)
+            self._capture_once(delay)
+        except Exception:
+            log.exception("capturing the selection failed")
         finally:
             self._busy.release()
+
+    def _capture_once(self, delay: float) -> None:
+        time.sleep(delay)
+        if not _foreground_is_safe():
+            log.debug("skipped: foreground window is a terminal or this app")
+            return
+        previous = _read_clipboard_text()
+        seq = _clipboard_seq()
+        with self._kb.pressed(keyboard.Key.ctrl):
+            self._kb.tap("c")
+        deadline = time.monotonic() + CLIPBOARD_WAIT_S
+        while _clipboard_seq() == seq and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if _clipboard_seq() == seq:
+            log.debug("skipped: nothing was copied (no text selected)")
+            return
+        time.sleep(0.05)  # let the source app finish writing the clipboard
+        text = (_read_clipboard_text() or "").strip()
+        _write_clipboard_text(previous)
+        text = " ".join(text.split())  # PDFs break lines mid-sentence
+        if not text or len(text) > 3000 or not looks_like_english(text):
+            log.debug("skipped: copied text is empty, too long or not English (%d chars)", len(text))
+            return
+        log.info("captured %d chars", len(text))
+        self._on_text(text)

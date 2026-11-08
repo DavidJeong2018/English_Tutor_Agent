@@ -20,6 +20,9 @@ class Settings:
     auto_translate: bool = True
     hotkey: str = "<ctrl>+<alt>+t"
     vocab_dir: str = field(default_factory=lambda: str(DEFAULT_VOCAB_DIR))
+    font_size: int = 12  # popup text size in points
+    popup_width: int = 480
+    popup_height: int = 0  # 0 -> fit the content; set once the user resizes the popup
 
     @classmethod
     def load(cls) -> "Settings":

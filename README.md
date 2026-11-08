@@ -35,6 +35,8 @@ The app runs in the system tray (the blue **영** icon).
 | `Ctrl+Alt+T` | Translates the current selection (works even when auto-translate is off) |
 | **저장** in the popup | Saves the word to your vocabulary list |
 | 📌 in the popup | Keeps the popup where you dragged it |
+| **가- / 가+** in the popup, or `Ctrl` + mouse wheel over it | Makes the popup text smaller or larger |
+| Drag the bottom-right corner of the popup | Resizes it; the size and text size are remembered |
 | `Esc` or ✕ | Closes the popup |
 | Tray icon → **내 단어장** (or double-click the icon) | Opens your vocabulary list: search, delete, open folder |
 | Tray icon → **자동 번역 켜기** | Turns automatic translation on selection on or off |
@@ -45,6 +47,7 @@ The app runs in the system tray (the blue **영** icon).
 | --- | --- |
 | Vocabulary | `Documents\EnglishTutor\vocabulary.json` and `vocabulary.csv` (opens in Excel); the folder can be changed in Settings |
 | Settings | `%APPDATA%\EnglishTutor\settings.json` |
+| Log (for troubleshooting) | `%APPDATA%\EnglishTutor\tutor.log` |
 
 ## How it works
 
@@ -59,6 +62,8 @@ The app runs in the system tray (the blue **영** icon).
 
 ## Notes
 
+- Only one copy of the app runs at a time; starting it again shows a message instead.
+- In Adobe Acrobat, use the Select tool (the arrow), not the Hand tool; the Hand tool doesn't select text.
 - Some apps don't support copying (protected PDFs, images of text). Nothing will appear for those.
 - If you copy an image and then highlight text, only text is put back on the clipboard.
 - Model and effort level can be changed in Settings. Lower-cost models such as
