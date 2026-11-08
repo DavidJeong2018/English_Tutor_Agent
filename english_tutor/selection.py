@@ -1,11 +1,10 @@
-"""Detects text the user copies or asks to translate in any Windows application.
+"""Detects text the user asks to translate in any Windows application.
 
-Two triggers:
-- The user highlights text and presses Ctrl+C. A global keyboard hook notices the
-  key press, waits for the clipboard to change, and reads the copied text. The
-  clipboard is left as the user copied it.
-- The hotkey (Ctrl+Alt+T by default). We press Ctrl+C on the user's behalf, read
-  the clipboard, then put the user's previous clipboard contents back.
+Two triggers, both handled the same way: we press Ctrl+C on the user's behalf,
+read the clipboard, then put the user's previous clipboard contents back.
+- The user highlights text, then presses and releases Ctrl+Alt with no other key.
+  A global keyboard hook notices the tap; shortcuts such as Ctrl+Alt+Del don't count.
+- The hotkey (Ctrl+Alt+T by default).
 """
 from __future__ import annotations
 
@@ -30,8 +29,8 @@ T = TypeVar("T")
 CONSOLE_CLASSES = {"ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS", "mintty", "PuTTY"}
 
 CLIPBOARD_WAIT_S = 0.6
-VK_C = 0x43
 CTRL_KEYS = {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
+ALT_KEYS = {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr}
 
 
 def _with_clipboard(action: Callable[[], T], attempts: int = 10) -> Optional[T]:
@@ -122,56 +121,65 @@ def looks_like_english(text: str) -> bool:
 
 
 class SelectionWatcher:
-    """Calls `on_text(text)` from a background thread when the user copies English text."""
+    """Calls `on_text(text)` from a background thread when the user asks to translate English text."""
 
     def __init__(self, on_text: Callable[[str], None], hotkey: str = "<ctrl>+<alt>+t"):
         self._on_text = on_text
         self._hotkey = hotkey
-        self.auto_enabled = True  # translate on Ctrl+C; the hotkey works either way
-        self._ctrl_down = set()
+        self.auto_enabled = True  # translate on a Ctrl+Alt tap; the hotkey works either way
+        self._mods_down = set()
+        self._combo = False    # Ctrl and Alt were both held during this press
+        self._spoiled = False  # another key was pressed too, so it was a shortcut
         self._busy = threading.Lock()
         self._kb = keyboard.Controller()
-        self._copy_listener: Optional[keyboard.Listener] = None
+        self._tap_listener: Optional[keyboard.Listener] = None
         self._hotkey_listener: Optional[keyboard.GlobalHotKeys] = None
 
     def start(self) -> None:
-        self._copy_listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
-        self._copy_listener.start()
+        self._tap_listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
+        self._tap_listener.start()
         self._hotkey_listener = keyboard.GlobalHotKeys({_vk_hotkey(self._hotkey): self._on_hotkey})
         self._hotkey_listener.start()
 
     def stop(self) -> None:
-        for listener in (self._copy_listener, self._hotkey_listener):
+        for listener in (self._tap_listener, self._hotkey_listener):
             if listener:
                 listener.stop()
 
     # --- event handlers (run on pynput threads; keep them fast) ---
 
     def _on_press(self, key, injected=False):
-        if injected:  # our own Ctrl+C from the hotkey path
+        if injected:  # our own Ctrl+C
             return
-        if key in CTRL_KEYS:
-            self._ctrl_down.add(key)
-            return
-        if not self._ctrl_down or not self.auto_enabled or getattr(key, "vk", None) != VK_C:
-            return
-        # The hook runs before the app handles the key, so this is the pre-copy number.
-        seq = _clipboard_seq()
-        threading.Thread(target=self._run, args=(self._read_user_copy, seq), daemon=True).start()
+        if key in CTRL_KEYS or key in ALT_KEYS:
+            if not self._mods_down:  # a new press begins
+                self._combo = self._spoiled = False
+            self._mods_down.add(key)
+            if self._mods_down & CTRL_KEYS and self._mods_down & ALT_KEYS:
+                self._combo = True
+        elif self._mods_down:
+            self._spoiled = True
 
     def _on_release(self, key, injected=False):
-        if not injected:
-            self._ctrl_down.discard(key)
+        if injected or key not in self._mods_down:
+            return
+        self._mods_down.discard(key)
+        if self._mods_down:
+            return
+        if self._combo and not self._spoiled and self.auto_enabled:
+            # Both keys are up now, so our Ctrl+C won't turn into Ctrl+Alt+C.
+            threading.Thread(target=self._run, args=(self._copy_selection, 0.05), daemon=True).start()
+        self._combo = self._spoiled = False
 
     def _on_hotkey(self):
         # Wait for the user to let go of Ctrl+Alt+T so our Ctrl+C isn't mangled.
-        threading.Thread(target=self._run, args=(self._copy_selection,), daemon=True).start()
+        threading.Thread(target=self._run, args=(self._copy_selection, 0.3), daemon=True).start()
 
     # --- capture ---
 
     def _run(self, capture: Callable, *args) -> None:
         if not self._busy.acquire(blocking=False):
-            return  # a held-down Ctrl+C repeats; one capture is enough
+            return  # one capture at a time
         try:
             text = capture(*args)
             if text is not None:
@@ -191,18 +199,9 @@ class SelectionWatcher:
         time.sleep(0.05)  # let the source app finish writing the clipboard
         return True
 
-    def _read_user_copy(self, seq: int) -> Optional[str]:
-        """The user pressed Ctrl+C themselves: read what they copied and leave it there."""
-        if _foreground_pid() == os.getpid():
-            return None  # copying from our own popup
-        if not self._wait_for_clipboard(seq):
-            log.debug("skipped: Ctrl+C didn't copy anything")
-            return None
-        return _read_clipboard_text()
-
-    def _copy_selection(self) -> Optional[str]:
-        """Hotkey: copy the selection for the user, then restore their clipboard."""
-        time.sleep(0.3)
+    def _copy_selection(self, delay: float) -> Optional[str]:
+        """Copies the selection for the user, then restores their clipboard."""
+        time.sleep(delay)
         if not _foreground_is_safe():
             log.debug("skipped: foreground window is a terminal or this app")
             return None
