@@ -99,7 +99,7 @@ class SettingsDialog(QDialog):
         self.effort = QComboBox()
         self.effort.addItems(["low", "medium", "high"])
         self.effort.setCurrentText(settings.effort)
-        self.auto = QCheckBox("텍스트를 선택하면 자동으로 번역", checked=settings.auto_translate)
+        self.auto = QCheckBox("텍스트를 선택하고 Ctrl+C를 누르면 번역", checked=settings.auto_translate)
         self.vocab_dir = QLineEdit(settings.vocab_dir)
         browse = QPushButton("찾아보기…")
         browse.clicked.connect(self._browse)

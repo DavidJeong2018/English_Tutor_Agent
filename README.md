@@ -1,7 +1,7 @@
 # English Tutor Agent (영어 도우미)
 
 A Windows desktop app for Korean speakers reading English. Highlight English text in any
-app — a PDF reader, a browser, Word — and a popup shows:
+app — a PDF reader, a browser, Word — and press `Ctrl+C`. A popup shows:
 
 - **번역**: a natural Korean translation of the selection
 - **표현 설명**: idioms, phrasal verbs and expressions in the text, explained in Korean with an example, each with a **저장** (save) button
@@ -43,15 +43,15 @@ The app runs in the system tray (the blue **영** icon).
 
 | Action | Result |
 | --- | --- |
-| Drag to highlight English text, or double-click a word | Popup with the translation appears next to the cursor |
-| `Ctrl+Alt+T` | Translates the current selection (works even when auto-translate is off) |
+| Highlight English text (or double-click a word), then press `Ctrl+C` | Popup with the translation appears next to the cursor; the text stays copied as usual |
+| `Ctrl+Alt+T` | Translates the current selection without copying it (works even when Ctrl+C translation is off) |
 | **저장** next to a word or expression in the popup | Saves it to your vocabulary list |
 | 📌 in the popup | Keeps the popup where you dragged it |
 | **가- / 가+** in the popup, or `Ctrl` + mouse wheel over it | Makes the popup text smaller or larger |
 | Drag the right edge, bottom edge or bottom-right corner of the popup | Resizes it; the size and text size are remembered |
 | `Esc` or ✕ | Closes the popup |
 | Tray icon → **내 단어장** (or double-click the icon) | Opens your vocabulary list: search, delete, open folder |
-| Tray icon → **자동 번역 켜기** | Turns automatic translation on selection on or off |
+| Tray icon → **Ctrl+C로 번역하기** | Turns translation on `Ctrl+C` on or off |
 
 ## Where things are stored
 
@@ -63,9 +63,10 @@ The app runs in the system tray (the blue **영** icon).
 
 ## How it works
 
-- `english_tutor/selection.py` watches the mouse globally. When a drag-select or double-click
-  ends, it presses `Ctrl+C`, reads the copied text, then puts your previous clipboard text back.
-  It skips terminal windows, where `Ctrl+C` would stop a running program.
+- `english_tutor/selection.py` watches the keyboard globally. When you press `Ctrl+C` and the
+  clipboard changes, it reads the copied text. For `Ctrl+Alt+T` it presses `Ctrl+C` itself,
+  reads the text, then puts your previous clipboard text back; that path skips terminal
+  windows, where `Ctrl+C` would stop a running program.
 - `english_tutor/translator.py` sends the text to Claude (`claude-opus-5-5` at low effort by
   default) and gets back structured JSON: translation, phrases, vocabulary. Results are cached
   so selecting the same sentence twice doesn't call the API again.
@@ -77,6 +78,6 @@ The app runs in the system tray (the blue **영** icon).
 - Only one copy of the app runs at a time; starting it again shows a message instead.
 - In Adobe Acrobat, use the Select tool (the arrow), not the Hand tool; the Hand tool doesn't select text.
 - Some apps don't support copying (protected PDFs, images of text). Nothing will appear for those.
-- If you copy an image and then highlight text, only text is put back on the clipboard.
+- With `Ctrl+Alt+T`, if an image was on the clipboard, only text is put back afterward.
 - Model and effort level can be changed in Settings. Lower-cost models such as
   `claude-haiku-5-5` respond faster and cost less per translation.

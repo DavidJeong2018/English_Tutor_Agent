@@ -1,14 +1,16 @@
-"""Detects text the user highlights in any Windows application.
+"""Detects text the user copies or asks to translate in any Windows application.
 
-Strategy: a global mouse hook watches for a drag-select or double-click.
-When one ends, we press Ctrl+C on the user's behalf, read the clipboard,
-and then put the user's previous clipboard contents back.
+Two triggers:
+- The user highlights text and presses Ctrl+C. A global keyboard hook notices the
+  key press, waits for the clipboard to change, and reads the copied text. The
+  clipboard is left as the user copied it.
+- The hotkey (Ctrl+Alt+T by default). We press Ctrl+C on the user's behalf, read
+  the clipboard, then put the user's previous clipboard contents back.
 """
 from __future__ import annotations
 
 import ctypes
 import logging
-import math
 import os
 import threading
 import time
@@ -19,7 +21,7 @@ import win32clipboard
 import win32con
 import win32gui
 import win32process
-from pynput import keyboard, mouse
+from pynput import keyboard
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -27,10 +29,9 @@ T = TypeVar("T")
 # Windows whose Ctrl+C means "interrupt", not "copy".
 CONSOLE_CLASSES = {"ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS", "mintty", "PuTTY"}
 
-DRAG_MIN_PX = 8
-DOUBLE_CLICK_S = 0.45
-COPY_SETTLE_S = 0.15
 CLIPBOARD_WAIT_S = 0.6
+VK_C = 0x43
+CTRL_KEYS = {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
 
 
 def _with_clipboard(action: Callable[[], T], attempts: int = 10) -> Optional[T]:
@@ -80,28 +81,22 @@ def _clipboard_seq() -> int:
     return ctypes.windll.user32.GetClipboardSequenceNumber()
 
 
-def _foreground_is_safe() -> bool:
-    """False for our own windows and terminals (where Ctrl+C kills programs)."""
+def _foreground_pid() -> int:
     hwnd = win32gui.GetForegroundWindow()
     if not hwnd:
-        return False
+        return 0
     try:
-        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        return win32process.GetWindowThreadProcessId(hwnd)[1]
     except Exception:
-        return False
-    if pid == os.getpid():
-        return False
-    return win32gui.GetClassName(hwnd) not in CONSOLE_CLASSES
+        return 0
 
 
-def _point_is_ours(x: int, y: int) -> bool:
-    """True when the click landed on one of this app's windows (e.g. the popup)."""
-    try:
-        hwnd = win32gui.WindowFromPoint((int(x), int(y)))
-        _, pid = win32process.GetWindowThreadProcessId(hwnd)
-    except Exception:
+def _foreground_is_safe() -> bool:
+    """False for our own windows and terminals (where Ctrl+C kills programs)."""
+    pid = _foreground_pid()
+    if not pid or pid == os.getpid():
         return False
-    return pid == os.getpid()
+    return win32gui.GetClassName(win32gui.GetForegroundWindow()) not in CONSOLE_CLASSES
 
 
 def _vk_hotkey(hotkey: str) -> str:
@@ -127,81 +122,102 @@ def looks_like_english(text: str) -> bool:
 
 
 class SelectionWatcher:
-    """Calls `on_text(text)` from a background thread whenever English text is highlighted."""
+    """Calls `on_text(text)` from a background thread when the user copies English text."""
 
     def __init__(self, on_text: Callable[[str], None], hotkey: str = "<ctrl>+<alt>+t"):
         self._on_text = on_text
         self._hotkey = hotkey
-        self.auto_enabled = True
-        self._press_pos = None
-        self._last_click_t = 0.0
+        self.auto_enabled = True  # translate on Ctrl+C; the hotkey works either way
+        self._ctrl_down = set()
         self._busy = threading.Lock()
         self._kb = keyboard.Controller()
-        self._mouse_listener: Optional[mouse.Listener] = None
+        self._copy_listener: Optional[keyboard.Listener] = None
         self._hotkey_listener: Optional[keyboard.GlobalHotKeys] = None
 
     def start(self) -> None:
-        self._mouse_listener = mouse.Listener(on_click=self._on_click)
-        self._mouse_listener.start()
+        self._copy_listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
+        self._copy_listener.start()
         self._hotkey_listener = keyboard.GlobalHotKeys({_vk_hotkey(self._hotkey): self._on_hotkey})
         self._hotkey_listener.start()
 
     def stop(self) -> None:
-        for listener in (self._mouse_listener, self._hotkey_listener):
+        for listener in (self._copy_listener, self._hotkey_listener):
             if listener:
                 listener.stop()
 
     # --- event handlers (run on pynput threads; keep them fast) ---
 
-    def _on_click(self, x, y, button, pressed):
-        if button != mouse.Button.left:
+    def _on_press(self, key, injected=False):
+        if injected:  # our own Ctrl+C from the hotkey path
             return
-        if pressed:
-            self._press_pos = (x, y)
+        if key in CTRL_KEYS:
+            self._ctrl_down.add(key)
             return
-        if not self.auto_enabled or self._press_pos is None or _point_is_ours(x, y):
+        if not self._ctrl_down or not self.auto_enabled or getattr(key, "vk", None) != VK_C:
             return
-        now = time.monotonic()
-        dragged = math.dist(self._press_pos, (x, y)) >= DRAG_MIN_PX
-        double = now - self._last_click_t < DOUBLE_CLICK_S
-        self._last_click_t = now
-        if dragged or double:
-            threading.Thread(target=self._capture, daemon=True).start()
+        # The hook runs before the app handles the key, so this is the pre-copy number.
+        seq = _clipboard_seq()
+        threading.Thread(target=self._run, args=(self._read_user_copy, seq), daemon=True).start()
+
+    def _on_release(self, key, injected=False):
+        if not injected:
+            self._ctrl_down.discard(key)
 
     def _on_hotkey(self):
         # Wait for the user to let go of Ctrl+Alt+T so our Ctrl+C isn't mangled.
-        threading.Thread(target=self._capture, kwargs={"delay": 0.3}, daemon=True).start()
+        threading.Thread(target=self._run, args=(self._copy_selection,), daemon=True).start()
 
     # --- capture ---
 
-    def _capture(self, delay: float = COPY_SETTLE_S) -> None:
+    def _run(self, capture: Callable, *args) -> None:
         if not self._busy.acquire(blocking=False):
-            return
+            return  # a held-down Ctrl+C repeats; one capture is enough
         try:
-            self._capture_once(delay)
+            text = capture(*args)
+            if text is not None:
+                self._deliver(text)
         except Exception:
             log.exception("capturing the selection failed")
         finally:
             self._busy.release()
 
-    def _capture_once(self, delay: float) -> None:
-        time.sleep(delay)
-        if not _foreground_is_safe():
-            log.debug("skipped: foreground window is a terminal or this app")
-            return
-        previous = _read_clipboard_text()
-        seq = _clipboard_seq()
-        with self._kb.pressed(keyboard.Key.ctrl):
-            self._kb.tap("c")
+    @staticmethod
+    def _wait_for_clipboard(seq: int) -> bool:
         deadline = time.monotonic() + CLIPBOARD_WAIT_S
         while _clipboard_seq() == seq and time.monotonic() < deadline:
             time.sleep(0.02)
         if _clipboard_seq() == seq:
-            log.debug("skipped: nothing was copied (no text selected)")
-            return
+            return False
         time.sleep(0.05)  # let the source app finish writing the clipboard
-        text = (_read_clipboard_text() or "").strip()
+        return True
+
+    def _read_user_copy(self, seq: int) -> Optional[str]:
+        """The user pressed Ctrl+C themselves: read what they copied and leave it there."""
+        if _foreground_pid() == os.getpid():
+            return None  # copying from our own popup
+        if not self._wait_for_clipboard(seq):
+            log.debug("skipped: Ctrl+C didn't copy anything")
+            return None
+        return _read_clipboard_text()
+
+    def _copy_selection(self) -> Optional[str]:
+        """Hotkey: copy the selection for the user, then restore their clipboard."""
+        time.sleep(0.3)
+        if not _foreground_is_safe():
+            log.debug("skipped: foreground window is a terminal or this app")
+            return None
+        previous = _read_clipboard_text()
+        seq = _clipboard_seq()
+        with self._kb.pressed(keyboard.Key.ctrl):
+            self._kb.tap("c")
+        if not self._wait_for_clipboard(seq):
+            log.debug("skipped: nothing was copied (no text selected)")
+            return None
+        text = _read_clipboard_text()
         _write_clipboard_text(previous)
+        return text
+
+    def _deliver(self, text: str) -> None:
         text = " ".join(text.split())  # PDFs break lines mid-sentence
         if not text or len(text) > 3000 or not looks_like_english(text):
             log.debug("skipped: copied text is empty, too long or not English (%d chars)", len(text))

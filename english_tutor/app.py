@@ -98,9 +98,9 @@ class TutorApp:
 
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(make_icon())
-        self.tray.setToolTip("English Tutor - 영어 문장을 선택하면 한국어로 번역합니다")
+        self.tray.setToolTip("English Tutor - 영어 문장을 선택하고 Ctrl+C를 누르면 번역합니다")
         menu = QMenu()
-        self.auto_action = QAction("자동 번역 켜기", checkable=True, checked=self.settings.auto_translate)
+        self.auto_action = QAction("Ctrl+C로 번역하기", checkable=True, checked=self.settings.auto_translate)
         self.auto_action.toggled.connect(self._set_auto)
         menu.addAction(self.auto_action)
         menu.addAction("내 단어장", self.show_vocab)
@@ -173,7 +173,7 @@ class TutorApp:
             QMessageBox.information(None, "English Tutor",
                                     "Anthropic API 키를 설정해 주세요.\n(트레이 아이콘 → 설정)")
             self.show_settings()
-        self.tray.showMessage("English Tutor", "영어 문장을 드래그하면 한국어 번역이 표시됩니다.",
+        self.tray.showMessage("English Tutor", "영어 문장을 선택하고 Ctrl+C를 누르면 한국어 번역이 표시됩니다.",
                               QSystemTrayIcon.Information, 3000)
         return self.qt.exec()
 
