@@ -7,7 +7,7 @@ if not exist .venv (
 )
 .venv\Scripts\python -m pip install -q pyinstaller
 .venv\Scripts\python -m PyInstaller --noconfirm --clean --windowed --onedir ^
-    --name EnglishTutor --icon assets\icon.ico main.py || exit /b 1
+    --name EnglishTutor --icon assets\icon.ico --add-data "assets;assets" main.py || exit /b 1
 powershell -NoProfile -Command "Compress-Archive -Path dist\EnglishTutor -DestinationPath dist\EnglishTutor.zip -Force"
 echo.
 echo Built dist\EnglishTutor.zip

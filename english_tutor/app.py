@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 import win32api
 import win32event
@@ -20,8 +21,17 @@ from .translator import TranslationError, Translator, TutorResult
 from .vocab import VocabEntry, VocabStore
 
 
+def _asset(name: str) -> Path:
+    """Finds a file in assets/, both when run from source and from the PyInstaller build."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return base / "assets" / name
+
+
 def make_icon() -> QIcon:
-    pix = QPixmap(64, 64)
+    ico = _asset("icon.ico")
+    if ico.exists():
+        return QIcon(str(ico))
+    pix = QPixmap(64, 64)  # fallback if the assets folder is missing
     pix.fill(Qt.transparent)
     p = QPainter(pix)
     p.setRenderHint(QPainter.Antialiasing)
