@@ -1,0 +1,4 @@
+anthropic>=0.125.0
+PySide6>=6.6
+pynput>=1.7
+pywin32>=303
